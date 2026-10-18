@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
+	
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -125,11 +125,11 @@ func initialModel() model {
 		},
 		{
 			id:       "yay",
-			title:    "Установка AUR-помощника (yay)",
+			title:    "Установка помощника yay (bin)",
 			selected: pick(saved.Selected, "yay", false),
 			commands: [][]string{
-				{"sudo", "pacman", "-S", "git", "base-devel", "--noconfirm", "--needed"},
-				{"bash", "-c", "cd /tmp && git clone https://archlinux.org && cd yay && makepkg -si --noconfirm"},
+				{"sudo", "pacman", "-S", "--needed", "git", "base-devel", "--noconfirm"},
+				{"bash", "-c", "cd /tmp && git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm"},
 			},
 		},
 	}
@@ -148,7 +148,7 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg: // Используем KeyMsg для v1
+	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -166,7 +166,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ", "enter":
 			m.tweaks[m.cursor].selected = !m.tweaks[m.cursor].selected
 
-		case "x": // Сигнал к запуску скриптов оптимизации
+		case "x":
 			m.executed = true
 			return m, tea.Quit
 		}
@@ -174,7 +174,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) View() string { // Возвращает string для v1
+func (m model) View() string {
 	if m.executed {
 		return "Выход из интерфейса настройки. Начинаем применение твиков...\n"
 	}
