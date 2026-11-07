@@ -7,14 +7,55 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	
+
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// --- Настройки и состояние ---
 
 type state struct {
 	Selected map[string]bool `json:"selected"`
 	Cursor   int             `json:"cursor"`
 }
+
+func statePath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		dir = os.TempDir() // Фолбэк, если конфиг-директория недоступна
+	}
+	return filepath.Join(dir, "arch-tweaker", "state.json")
+}
+
+func loadState() state {
+	s := state{Selected: make(map[string]bool)}
+	data, err := os.ReadFile(statePath())
+	if err == nil {
+		json.Unmarshal(data, &s)
+	}
+	if s.Selected == nil {
+		s.Selected = make(map[string]bool)
+	}
+	return s
+}
+
+func saveState(m model) {
+	s := state{
+		Selected: make(map[string]bool),
+		Cursor:   m.cursor,
+	}
+	for _, t := range m.tweaks {
+		s.Selected[t.id] = t.selected
+	}
+
+	path := statePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err == nil {
+		if data, err := json.MarshalIndent(s, "", "  "); err == nil {
+			os.WriteFile(path, data, 0644)
+		}
+	}
+}
+
+// --- Структуры данных ---
 
 type tweak struct {
 	id       string
@@ -23,92 +64,46 @@ type tweak struct {
 	commands [][]string
 }
 
-func (m model) selectedMap() map[string]bool {
-	sel := make(map[string]bool, len(m.tweaks))
-	for _, t := range m.tweaks {
-		sel[t.id] = t.selected
-	}
-	return sel
-}
-
-func statePath() string {
-	if dir, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(dir, "arch-tweaker", "state.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "arch-tweaker-state.json"
-	}
-	return filepath.Join(home, ".config", "arch-tweaker", "state.json")
-}
-
-func loadState() state {
-	data, err := os.ReadFile(statePath())
-	if err != nil {
-		return state{Selected: map[string]bool{}, Cursor: 0}
-	}
-	var s state
-	if err := json.Unmarshal(data, &s); err != nil {
-		return state{Selected: map[string]bool{}, Cursor: 0}
-	}
-	if s.Selected == nil {
-		s.Selected = map[string]bool{}
-	}
-	return s
-}
-
-func saveState(s state) {
-	path := statePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return
-	}
-}
-
 type model struct {
 	tweaks   []tweak
 	cursor   int
 	executed bool
 }
 
-func pick(saved map[string]bool, id string, def bool) bool {
-	if v, ok := saved[id]; ok {
-		return v
-	}
-	return def
-}
-
 func initialModel() model {
 	saved := loadState()
+	
+	// Вспомогательная функция для загрузки сохраненного выбора
+	pick := func(id string, def bool) bool {
+		if v, ok := saved.Selected[id]; ok {
+			return v
+		}
+		return def
+	}
+
 	tweaks := []tweak{
 		{
 			id:       "update",
 			title:    "Обновление системы (pacman -Syu)",
-			selected: pick(saved.Selected, "update", true),
+			selected: pick("update", true),
 			commands: [][]string{{"sudo", "pacman", "-Syu", "--noconfirm"}},
 		},
 		{
 			id:       "cache-clean",
 			title:    "Очистка кэша пакетов (удалить старые версии)",
-			selected: pick(saved.Selected, "cache-clean", false),
+			selected: pick("cache-clean", false),
 			commands: [][]string{{"sudo", "pacman", "-Sc", "--noconfirm"}},
 		},
 		{
 			id:       "orphans",
 			title:    "Удаление неиспользуемых зависимостей (сирот)",
-			selected: pick(saved.Selected, "orphans", false),
+			selected: pick("orphans", false),
 			commands: [][]string{{"bash", "-c", "sudo pacman -Qdtq | xargs -r sudo pacman -Rns --noconfirm"}},
 		},
 		{
 			id:       "ssd-trim",
 			title:    "Оптимизация SSD (включение fstrim.timer)",
-			selected: pick(saved.Selected, "ssd-trim", true),
+			selected: pick("ssd-trim", true),
 			commands: [][]string{
 				{"sudo", "systemctl", "enable", "fstrim.timer"},
 				{"sudo", "systemctl", "start", "fstrim.timer"},
@@ -117,7 +112,7 @@ func initialModel() model {
 		{
 			id:       "mirrors",
 			title:    "Оптимизация зеркал (установка и запуск reflector)",
-			selected: pick(saved.Selected, "mirrors", false),
+			selected: pick("mirrors", false),
 			commands: [][]string{
 				{"sudo", "pacman", "-S", "reflector", "--noconfirm", "--needed"},
 				{"sudo", "reflector", "--latest", "5", "--protocol", "https", "--sort", "rate", "--save", "/etc/pacman.d/mirrorlist"},
@@ -126,21 +121,23 @@ func initialModel() model {
 		{
 			id:       "yay",
 			title:    "Установка помощника yay (bin)",
-			selected: pick(saved.Selected, "yay", false),
+			selected: pick("yay", false),
 			commands: [][]string{
 				{"sudo", "pacman", "-S", "--needed", "git", "base-devel", "--noconfirm"},
 				{"bash", "-c", "cd /tmp && git clone https://aur.archlinux.org/yay-bin.git && cd yay-bin && makepkg -si --noconfirm"},
 			},
 		},
 	}
-	m := model{tweaks: tweaks}
-	if saved.Cursor >= 0 && saved.Cursor < len(m.tweaks) {
-		m.cursor = saved.Cursor
-	} else {
-		m.cursor = 0
+
+	cursor := saved.Cursor
+	if cursor < 0 || cursor >= len(tweaks) {
+		cursor = 0
 	}
-	return m
+
+	return model{tweaks: tweaks, cursor: cursor}
 }
+
+// --- Логика Bubble Tea ---
 
 func (m model) Init() tea.Cmd {
 	return nil
@@ -152,20 +149,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
-
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-
 		case "down", "j":
 			if m.cursor < len(m.tweaks)-1 {
 				m.cursor++
 			}
-
 		case " ", "enter":
 			m.tweaks[m.cursor].selected = !m.tweaks[m.cursor].selected
-
 		case "x":
 			m.executed = true
 			return m, tea.Quit
@@ -181,67 +174,65 @@ func (m model) View() string {
 
 	s := "--- ARCH LINUX TERMINAL TWEAKER ---\n\n"
 	s += "Используйте стрелочки или j/k для навигации.\n"
-	s += "[Пробел/Enter] — выбрать/отменить. [X] — запустить. [Q] — выход.\n"
-	s += "(Выбор сохраняется между запусками)\n\n"
+	s += "[Пробел/Enter] — выбрать/отменить. [X] — запустить. [Q] — выход.\n\n"
 
-	for i, tweak := range m.tweaks {
+	for i, t := range m.tweaks {
 		cursor := " "
 		if m.cursor == i {
 			cursor = ">"
 		}
-
 		checked := " "
-		if tweak.selected {
+		if t.selected {
 			checked = "X"
 		}
-
-		s += fmt.Sprintf("%s [%s] %s\n", cursor, checked, tweak.title)
+		s += fmt.Sprintf("%s [%s] %s\n", cursor, checked, t.title)
 	}
 
 	return s
 }
 
+// --- Выполнение ---
+
 func main() {
 	p := tea.NewProgram(initialModel())
-	m, err := p.Run()
+	finalModelRaw, err := p.Run()
 	if err != nil {
 		fmt.Printf("Ошибка запуска интерфейса: %v\n", err)
 		os.Exit(1)
 	}
 
-	finalModel := m.(model)
+	m := finalModelRaw.(model)
+	saveState(m) // Сохраняем выбор и положение курсора
 
-	saveState(state{
-		Selected: finalModel.selectedMap(),
-		Cursor:   finalModel.cursor,
-	})
+	if !m.executed {
+		fmt.Println("\nВыход без изменений.")
+		return
+	}
 
-	if finalModel.executed {
-		fmt.Println("\n[+] Запуск выбранных оптимизаций...")
-		for _, t := range finalModel.tweaks {
-			if !t.selected {
+	fmt.Println("\n[+] Запуск выбранных оптимизаций...")
+	for _, t := range m.tweaks {
+		if !t.selected {
+			continue
+		}
+		
+		fmt.Printf("\n--> Выполняется: %s\n", t.title)
+		for _, cmdArgs := range t.commands {
+			if len(cmdArgs) == 0 {
 				continue
 			}
-			fmt.Printf("\n--> Выполняется: %s\n", t.title)
-			for _, cmdArgs := range t.commands {
-				if len(cmdArgs) == 0 {
-					continue
-				}
-				fmt.Printf("Запуск: %s\n", strings.Join(cmdArgs, " "))
+			
+			fmt.Printf("Запуск: %s\n", strings.Join(cmdArgs, " "))
+			cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Stdin = os.Stdin
 
-				cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				cmd.Stdin = os.Stdin
-
-				if err := cmd.Run(); err != nil {
-					fmt.Printf("[Ошибка] Не удалось выполнить: %v\n", err)
-					break
-				}
+			if err := cmd.Run(); err != nil {
+				fmt.Printf("[Ошибка] Не удалось выполнить: %v\n", err)
+				break // Если команда упала, не выполняем следующие из этого твика
 			}
 		}
-		fmt.Println("\n[Все готово!] Система оптимизирована.")
-	} else {
-		fmt.Println("\nВыход без изменений.")
 	}
+	
+	fmt.Println("\n[Все готово!] Система оптимизирована.")
 }
